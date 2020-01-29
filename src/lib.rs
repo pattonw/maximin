@@ -54,8 +54,26 @@ fn rusty_12n_t2s_edge(
     t_edges: Vec<(usize, usize)>,
     edge_matchings: Vec<(usize, usize, usize, usize)>,
 ) -> PyResult<Vec<Vec<usize>>> {
-    unimplemented![];
-    Ok(vec![vec![1]])
+    let index_map: HashMap<(usize, usize), usize> = t_edges
+        .clone()
+        .into_iter()
+        .enumerate()
+        .map(|(i, x)| (x, i))
+        .collect();
+
+    let indices: Vec<usize> = edge_matchings
+        .iter()
+        .map(|(s_u, s_v, t_u, t_v)| {
+            *index_map
+                .get(&(*t_u, *t_v))
+                .expect(&format!["Index map has no entry for {:?}", (t_u, t_v)])
+        })
+        .collect();
+
+    Ok(get_constraints(
+        indices.into_iter().enumerate(),
+        t_edges.len(),
+    ))
 }
 
 #[pyfunction]
