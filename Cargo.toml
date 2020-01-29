@@ -1,0 +1,14 @@
+[package]
+name = "funlib-match-helpers"
+version = "0.1.0"
+authors = ["pattonw <pattonw@hhmi.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "funlib_match_helpers"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.8", features = ["extension-module"] }
