@@ -1,0 +1,1 @@
+from .maximin import double, get_42, maximin_tree

@@ -1,5 +1,5 @@
 [package]
-name = "funlib-match-helpers"
+name = "maximin"
 version = "0.1.0"
 authors = ["pattonw <pattonw@hhmi.org>"]
 edition = "2018"
@@ -7,8 +7,25 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "funlib_match_helpers"
+name = "maximin"
 crate-type = ["cdylib"]
+
+[package.metadata.maturin]
+classifier = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.6",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+]
+requires-dist = ["numpy"]
+requires-python = ">=3.6"
 
 [dependencies]
 pyo3 = { version = "0.8", features = ["extension-module"] }
+numpy = "0.7"
+ndarray = "0.13"
+petgraph = "0.5.0"
