@@ -1,1 +1,1 @@
-from .maximin import double, get_42, maximin_tree
+from .maximin import double, get_42, maximin_tree_edges
