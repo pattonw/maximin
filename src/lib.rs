@@ -67,10 +67,10 @@ fn double(py: Python, x: &PyArrayDyn<f64>) -> Py<PyArrayDyn<f64>> {
 
 fn maximin_3d_tree(
     intensities: &Array<f64, Ix3>,
-) -> Graph<(usize, usize, usize), f64, petgraph::Undirected> {
+) -> Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
-    let mut complete: Graph<(usize, usize, usize), f64, petgraph::Undirected> =
+    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         Graph::new_undirected();
 
     let mut node_index_map: HashMap<usize, (usize, usize, usize)> = HashMap::new();
@@ -100,7 +100,12 @@ fn maximin_3d_tree(
                 Some(up_index) => {
                     if up_index < &usize::max_value() {
                         let min_intensity = f64::min(*value, intensities[up_neighbor_index]);
-                        complete.add_edge(node_index, NodeIndex::new(*up_index), -min_intensity);
+                        let max_intensity = f64::max(*value, intensities[up_neighbor_index]);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*up_index),
+                            (-min_intensity, -max_intensity),
+                        );
                     }
                 }
                 None => (),
@@ -110,7 +115,12 @@ fn maximin_3d_tree(
                 Some(down_index) => {
                     if down_index < &usize::max_value() {
                         let min_intensity = f64::min(*value, intensities[down_neighbor_index]);
-                        complete.add_edge(node_index, NodeIndex::new(*down_index), -min_intensity);
+                        let max_intensity = f64::max(*value, intensities[down_neighbor_index]);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*down_index),
+                            (-min_intensity, -max_intensity),
+                        );
                     }
                 }
                 None => (),
@@ -118,7 +128,7 @@ fn maximin_3d_tree(
         }
     }
 
-    let mst: Graph<(usize, usize, usize), f64, petgraph::Undirected> =
+    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         Graph::from_elements(min_spanning_tree(&complete));
     return mst;
 }
@@ -127,12 +137,12 @@ fn masked_maximin_3d_tree(
     intensities: &Array<f64, Ix3>,
     mask: &Array<u8, Ix3>,
 ) -> (
-    Graph<(usize, usize, usize), f64, petgraph::Undirected>,
+    Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     Vec<(usize, usize)>,
 ) {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
-    let mut complete: Graph<(usize, usize, usize), f64, petgraph::Undirected> =
+    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         Graph::new_undirected();
 
     let mut points = Vec::new();
@@ -173,8 +183,13 @@ fn masked_maximin_3d_tree(
             match up_index {
                 Some(up_index) => {
                     if up_index < &usize::max_value() {
+                        let min_intensity = f64::min(*value, intensities[up_neighbor_index]);
                         let max_intensity = f64::max(*value, intensities[up_neighbor_index]);
-                        complete.add_edge(node_index, NodeIndex::new(*up_index), -max_intensity);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*up_index),
+                            (-min_intensity, -max_intensity),
+                        );
                     }
                 }
                 None => (),
@@ -183,8 +198,13 @@ fn masked_maximin_3d_tree(
             match down_index {
                 Some(down_index) => {
                     if down_index < &usize::max_value() {
+                        let min_intensity = f64::min(*value, intensities[down_neighbor_index]);
                         let max_intensity = f64::max(*value, intensities[down_neighbor_index]);
-                        complete.add_edge(node_index, NodeIndex::new(*down_index), -max_intensity);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*down_index),
+                            (-min_intensity, -max_intensity),
+                        );
                     }
                 }
                 None => (),
@@ -192,23 +212,23 @@ fn masked_maximin_3d_tree(
         }
     }
 
-    let mst: Graph<(usize, usize, usize), f64, petgraph::Undirected> =
+    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         Graph::from_elements(min_spanning_tree(&complete));
     return (mst, pairs);
 }
 
 fn tree_edges(
-    tree: Graph<(usize, usize, usize), f64, petgraph::Undirected>,
+    graph: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
 ) -> Vec<((usize, usize, usize), (usize, usize, usize))> {
-    let mst_edges: Vec<((usize, usize, usize), (usize, usize, usize))> = min_spanning_tree(&tree)
+    let mst_edges: Vec<((usize, usize, usize), (usize, usize, usize))> = min_spanning_tree(&graph)
         .filter_map(|elem| match elem {
             Element::Edge {
                 source,
                 target,
                 weight: _,
             } => Some((
-                *tree.node_weight(NodeIndex::new(source))?,
-                *tree.node_weight(NodeIndex::new(target))?,
+                *graph.node_weight(NodeIndex::new(source))?,
+                *graph.node_weight(NodeIndex::new(target))?,
             )),
             Element::Node { weight: _ } => None,
         })
@@ -292,7 +312,7 @@ where
 }
 
 fn query_tree(
-    tree: &Graph<(usize, usize, usize), f64, petgraph::Undirected>,
+    tree: &Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     intensities: &ndarray::Array<f64, Ix3>,
     query_tuples: &Vec<(usize, usize)>,
 ) -> Vec<f64> {
@@ -380,20 +400,17 @@ mod tests {
         assert_eq!(doubled_x, y);
     }
     #[test]
+    fn tuple_ordering() {
+        assert![(1.0, 2.0) < (2.0, 2.0)];
+        assert![(1.0, 2.0) > (1.0, 1.0)];
+    }
+    #[test]
     fn test_maximin_tree() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]], [[7.0, 6.0], [5.0, 4.0]]];
         let tree = maximin_3d_tree(&x);
-        let edges = tree_edges(tree);
-        assert_eq!(
-            edges,
-            vec![
-                ((0, 0, 0), (0, 1, 0)),
-                ((0, 1, 0), (1, 1, 0)),
-                ((1, 1, 0), (1, 0, 0))
-            ]
-        )
+        assert_eq![tree.edge_count(), 7];
     }
-    #[test]
+
     fn test_maximin_tree_wrong_dim() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]]].into_dyn();
         let y = x.view();
