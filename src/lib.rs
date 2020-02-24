@@ -1,3 +1,5 @@
+#![feature(option_expect_none)]
+
 use ndarray::ShapeError;
 use ndarray::{Array, ArrayD, ArrayViewD, Ix3, IxDynImpl};
 use numpy::{IntoPyArray, PyArrayDyn};
@@ -8,6 +10,7 @@ use pyo3::{exceptions, PyErr, PyResult};
 use petgraph::algo::min_spanning_tree;
 use petgraph::data::*;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::Dfs;
 use petgraph::Graph;
 
 use std;
@@ -16,7 +19,7 @@ use std::error;
 use std::fmt;
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use std::hash::Hash;
 
@@ -138,7 +141,7 @@ fn masked_maximin_3d_tree(
     mask: &Array<u8, Ix3>,
 ) -> (
     Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    Vec<(usize, usize)>,
+    Vec<(usize, usize, usize)>,
 ) {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
@@ -146,7 +149,6 @@ fn masked_maximin_3d_tree(
         Graph::new_undirected();
 
     let mut points = Vec::new();
-    let mut pairs = Vec::new();
 
     for (index, value) in intensities.indexed_iter() {
         let node_index = complete.add_node(index);
@@ -156,10 +158,7 @@ fn masked_maximin_3d_tree(
             .expect(&format!["Mask does not have a value at {:?}", index])
             > 0u8
         {
-            for point in points.iter() {
-                pairs.push((*point, node_index.index()));
-            }
-            points.push(node_index.index());
+            points.push(index);
         }
 
         node_indices[index] = node_index.index();
@@ -214,7 +213,9 @@ fn masked_maximin_3d_tree(
 
     let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         Graph::from_elements(min_spanning_tree(&complete));
-    return (mst, pairs);
+
+    println!["Got {} points", points.len()];
+    return (mst, points);
 }
 
 fn tree_edges(
@@ -277,7 +278,6 @@ where
     scores.insert(start, zero_score);
     visit_next.push(MinScored(zero_score, start));
     while let Some(MinScored(node_score, node)) = visit_next.pop() {
-        println!["visiting _ with cost {:?}", node_score];
         if visited.is_visited(&node) {
             continue;
         }
@@ -339,7 +339,6 @@ fn query_tree(
             |w, c| f64::min(*w.weight(), c),
             1.0f64 / 0.0f64,
         );
-        println!["source: {:?}, target: {:?}, costs: {:?}", u, v, dijk];
         scores.push(
             *dijk
                 .get(&NodeIndex::new(*v))
@@ -349,6 +348,133 @@ fn query_tree(
     return scores;
 }
 
+fn last_occurance<T: std::cmp::Eq + std::hash::Hash>(vs: &Vec<T>, ps: HashSet<T>) -> Option<&T> {
+    let mut last = vs.iter().rev();
+    loop {
+        match last.next() {
+            Some(v) => {
+                if ps.contains(v) {
+                    return Some(v);
+                }
+            }
+            None => return None,
+        };
+    }
+}
+
+fn reduce_tree(
+    mut tree: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    query_points: Vec<(usize, usize, usize)>,
+) -> Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
+    let mut nodes_to_keep: HashSet<(usize, usize, usize)> = HashSet::new();
+    let query_points: HashSet<(usize, usize, usize)> = query_points.into_iter().collect();
+
+    let mut start = None;
+    for node_index in tree.node_indices() {
+        if query_points.contains(tree.node_weight(node_index).unwrap()) {
+            start = Some(node_index);
+        }
+    }
+    let mut dfs = Dfs::new(&tree, NodeIndex::new(start.unwrap().index()));
+    let mut seen_nodes: Vec<NodeIndex> = vec![];
+
+    let mut i = 0;
+    while let Some(current) = dfs.next(&tree) {
+        if i % 1000 == 0 {
+            println!["traversed {} nodes!", i];
+        }
+        i += 1;
+
+        if seen_nodes.len() == 0 {
+            if !query_points.contains(tree.node_weight(current).unwrap()) {
+                panic!["first node is not in query_points"];
+            }
+            seen_nodes.push(current);
+            nodes_to_keep.insert(*tree.node_weight(current).unwrap());
+            continue;
+        }
+
+        let current_id = current.index();
+
+        // pop nodes that aren't neighbors of current.
+        // Since this is a dfs, we must have come accross currents parents before,
+        // so this is guaranteed to end before seen_nodes is empty.
+        loop {
+            let candidate = seen_nodes.pop().expect("no previously seen nodes!");
+            match tree.find_edge(candidate, current) {
+                Some(_) => {
+                    seen_nodes.push(candidate);
+                    break;
+                }
+                None => (),
+            }
+        }
+
+        seen_nodes.push(current);
+
+        // If the current id is a query point, push to query points and
+        // add nodes up to previous query point to tree
+        if query_points.contains(tree.node_weight(current).unwrap()) {
+            let mut last = seen_nodes.iter().rev();
+            loop {
+                let candidate = last.next().expect("No more candidates in seen_nodes");
+                if nodes_to_keep.contains(tree.node_weight(*candidate).unwrap()) {
+                    break;
+                } else {
+                    nodes_to_keep.insert(*tree.node_weight(*candidate).unwrap());
+                }
+            }
+        }
+    }
+
+    tree.retain_nodes(|tree, node| nodes_to_keep.contains(tree.node_weight(node).unwrap()));
+
+    let mut nodes_to_collapse = vec![];
+
+    for node in tree.node_indices() {
+        if !query_points.contains(tree.node_weight(node).unwrap()) {
+            nodes_to_collapse.push(node);
+        }
+    }
+
+    nodes_to_collapse.sort_unstable();
+    for node in nodes_to_collapse.iter().rev() {
+        let mut neighbors = tree.neighbors(*node).detach();
+        let (edge_a, node_a) = match neighbors.next(&tree) {
+            Some(x) => x,
+            None => {
+                tree.remove_node(*node).unwrap();
+                continue;
+            }
+        };
+        let (edge_b, node_b) = match neighbors.next(&tree) {
+            Some(x) => x,
+            None => {
+                tree.remove_node(*node).unwrap();
+                continue;
+            }
+        };
+        match neighbors.next(&tree) {
+            Some(_) => continue,
+            None => (),
+        };
+
+        let weight_a = *tree.edge_weight(edge_a).unwrap();
+        let weight_b = *tree.edge_weight(edge_b).unwrap();
+        tree.add_edge(
+            node_a,
+            node_b,
+            (
+                f64::max(weight_a.0, weight_b.0),
+                f64::min(weight_a.1, weight_b.1),
+            ),
+        );
+        tree.remove_edge(edge_a);
+        tree.remove_edge(edge_b);
+    }
+    return tree;
+}
+
 #[pyfunction]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
@@ -356,20 +482,27 @@ fn maximin_tree_query(
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_dim(intensities.as_array())?;
     let mask = into_dim(mask.as_array())?;
-    let (tree, query_tuples) = masked_maximin_3d_tree(&intensities, &mask);
-    let scores = query_tree(&tree, &intensities, &query_tuples);
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = query_tuples
-        .iter()
-        .zip(scores)
-        .map(|((u, v), c)| {
+    let (mut tree, query_points) = masked_maximin_3d_tree(&intensities, &mask);
+    println![
+        "Got tree with {} nodes and {} edges",
+        tree.node_count(),
+        tree.edge_count()
+    ];
+    let sub_tree = reduce_tree(tree, query_points);
+    println!["Reduced tree to {} nodes", sub_tree.node_count()];
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
+        .edge_indices()
+        .map(|e_ind| {
+            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
             (
-                *tree
-                    .node_weight(NodeIndex::new(*u))
+                *sub_tree
+                    .node_weight(u)
                     .expect(&format!["Query node {:?} missing", u]),
-                *tree
-                    .node_weight(NodeIndex::new(*v))
+                *sub_tree
+                    .node_weight(v)
                     .expect(&format!["Query node {:?} missing", v]),
-                c,
+                -min_intensity,
             )
         })
         .collect();
