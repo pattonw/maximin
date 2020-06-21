@@ -1,7 +1,6 @@
 import numpy as np
-import pytest
 
-from maximin import maximin_tree_edges, maximin_tree_query
+from maximin import maximin_tree_query
 
 
 def test_maximin_query():
@@ -41,6 +40,8 @@ def test_maximin_query():
     seen = [(n_to_index[u], n_to_index[v], cost) for u, v, cost in costs]
     seen = [(u, v, c) if u < v else (v, u, c) for u, v, c in seen]
     seen = {(u, v): c for u, v, c in seen}
+
+    assert len(seen) == 3
 
     for key, value in seen.items():
         assert expected_costs[key] == value

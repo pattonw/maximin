@@ -1,7 +1,9 @@
 #![feature(option_expect_none)]
 
+#[macro_use]
 use ndarray::ShapeError;
-use ndarray::{Array, ArrayD, ArrayViewD, Ix3, IxDynImpl};
+use ndarray::linalg::Dot;
+use ndarray::{s, Array, ArrayD, ArrayViewD, Ix3, Ix4, IxDynImpl};
 use numpy::{IntoPyArray, PyArrayDyn};
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -50,22 +52,6 @@ impl std::convert::From<ShapeErrorWrapper> for PyErr {
     fn from(err: ShapeErrorWrapper) -> PyErr {
         exceptions::OSError::py_err(err.to_string())
     }
-}
-
-#[pyfunction]
-fn get_42() -> PyResult<usize> {
-    Ok(42)
-}
-
-fn rusty_double(x: ArrayViewD<f64>) -> ArrayD<f64> {
-    2.0 * &x
-}
-
-#[pyfunction]
-fn double(py: Python, x: &PyArrayDyn<f64>) -> Py<PyArrayDyn<f64>> {
-    let x = x.as_array();
-    let result = rusty_double(x);
-    result.into_pyarray(py).to_owned()
 }
 
 fn maximin_3d_tree(
@@ -218,6 +204,96 @@ fn masked_maximin_3d_tree(
     return (mst, points);
 }
 
+fn masked_maximin_4d_tree(
+    intensities: &Array<f64, Ix4>,
+    mask: &Array<u8, Ix3>,
+) -> (
+    Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    Vec<(usize, usize, usize)>,
+) {
+    let n_dim = mask.ndim();
+    let (c, z, y, x) = intensities.dim();
+    let mut node_indices =
+        Array::<usize, _>::from_elem(ndarray::Dim((z, y, x)), usize::max_value());
+    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        Graph::new_undirected();
+
+    let mut points = Vec::new();
+
+    for i in 0..z {
+        for j in 0..y {
+            for k in 0..x {
+                let index = (i, j, k);
+                let index_slice = s![.., index.0, index.1, index.2];
+                let value = intensities.slice(index_slice);
+                let node_index = complete.add_node(index);
+
+                if *mask
+                    .get(index)
+                    .expect(&format!["Mask does not have a value at {:?}", index])
+                    > 0u8
+                {
+                    points.push(index);
+                }
+                node_indices[index] = node_index.index();
+
+                for i in 0..n_dim {
+                    let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
+                    adj[i] = 1;
+                    let up_index = (
+                        usize::wrapping_add(index.0, adj[0]),
+                        usize::wrapping_add(index.1, adj[1]),
+                        usize::wrapping_add(index.2, adj[2]),
+                    );
+                    let up_index_slice = s![.., up_index.0, up_index.1, up_index.2];
+                    let down_index = (
+                        usize::wrapping_sub(index.0, adj[0]),
+                        usize::wrapping_sub(index.1, adj[1]),
+                        usize::wrapping_sub(index.2, adj[2]),
+                    );
+                    let down_index_slice = s![.., down_index.0, down_index.1, down_index.2];
+                    let up_index = node_indices.get(up_index);
+                    let down_index = node_indices.get(down_index);
+                    match up_index {
+                        Some(up_index) => {
+                            if up_index < &usize::max_value() {
+                                let difference = &value - &intensities.slice(up_index_slice);
+                                let dot_prod = difference.dot(&difference);
+                                complete.add_edge(
+                                    node_index,
+                                    NodeIndex::new(*up_index),
+                                    (f64::sqrt(dot_prod), 1.0),
+                                );
+                            }
+                        }
+                        None => (),
+                    }
+                    match down_index {
+                        Some(down_index) => {
+                            if down_index < &usize::max_value() {
+                                let difference = &value - &intensities.slice(down_index_slice);
+                                let dot_prod = difference.dot(&difference);
+                                complete.add_edge(
+                                    node_index,
+                                    NodeIndex::new(*down_index),
+                                    (f64::sqrt(dot_prod), 1.0),
+                                );
+                            }
+                        }
+                        None => (),
+                    }
+                }
+            }
+        }
+    }
+
+    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        Graph::from_elements(min_spanning_tree(&complete));
+
+    println!["Got {} points", points.len()];
+    return (mst, points);
+}
+
 fn tree_edges(
     graph: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
 ) -> Vec<((usize, usize, usize), (usize, usize, usize))> {
@@ -237,8 +313,17 @@ fn tree_edges(
     return mst_edges;
 }
 
-fn into_dim<T: Clone>(intensities: ArrayViewD<T>) -> Result<ndarray::Array<T, Ix3>, PyErr> {
+fn into_3d<T: Clone>(intensities: ArrayViewD<T>) -> Result<ndarray::Array<T, Ix3>, PyErr> {
     let intensities = intensities.to_owned().into_dimensionality::<Ix3>();
+    let intensities = match intensities {
+        Err(e) => return Err(PyErr::from(ShapeErrorWrapper { err: e })),
+        Ok(array) => array,
+    };
+    return Ok(intensities);
+}
+
+fn into_4d<T: Clone>(intensities: ArrayViewD<T>) -> Result<ndarray::Array<T, Ix4>, PyErr> {
+    let intensities = intensities.to_owned().into_dimensionality::<Ix4>();
     let intensities = match intensities {
         Err(e) => return Err(PyErr::from(ShapeErrorWrapper { err: e })),
         Ok(array) => array,
@@ -252,7 +337,7 @@ fn maximin_tree_edges(
     intensities: &PyArrayDyn<f64>,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize))>> {
     let intensities = intensities.as_array();
-    let intensities = into_dim(intensities)?;
+    let intensities = into_3d(intensities)?;
     let tree = maximin_3d_tree(&intensities);
     Ok(tree_edges(tree))
 }
@@ -475,13 +560,15 @@ fn reduce_tree(
     return tree;
 }
 
+/// given an python ndarray of intensities (f64) and mask (u8) return pairwise costs between
+/// every voxel in the mask.
 #[pyfunction]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
-    let intensities = into_dim(intensities.as_array())?;
-    let mask = into_dim(mask.as_array())?;
+    let intensities = into_3d(intensities.as_array())?;
+    let mask = into_3d(mask.as_array())?;
     let (mut tree, query_points) = masked_maximin_3d_tree(&intensities, &mask);
     println![
         "Got tree with {} nodes and {} edges",
@@ -509,13 +596,50 @@ fn maximin_tree_query(
     Ok(results)
 }
 
+/// given an python ndarray of intensities (f64) and mask (u8) return pairwise costs between
+/// every voxel in the mask.
+#[pyfunction]
+fn maximin_tree_query_hd(
+    intensities: &PyArrayDyn<f64>,
+    mask: &PyArrayDyn<u8>,
+) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
+    let intensities = into_4d(intensities.as_array())?;
+    println!["{:?}", intensities.dim()];
+    let mask = into_3d(mask.as_array())?;
+    println!["{:?}", mask.dim()];
+    let (mut tree, query_points) = masked_maximin_4d_tree(&intensities, &mask);
+    println![
+        "Got tree with {} nodes and {} edges",
+        tree.node_count(),
+        tree.edge_count()
+    ];
+    let sub_tree = reduce_tree(tree, query_points);
+    println!["Reduced tree to {} nodes", sub_tree.node_count()];
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
+        .edge_indices()
+        .map(|e_ind| {
+            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
+            (
+                *sub_tree
+                    .node_weight(u)
+                    .expect(&format!["Query node {:?} missing", u]),
+                *sub_tree
+                    .node_weight(v)
+                    .expect(&format!["Query node {:?} missing", v]),
+                *min_intensity,
+            )
+        })
+        .collect();
+    Ok(results)
+}
+
 /// This module is a python module implemented in Rust.
 #[pymodule]
 fn maximin(py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_wrapped(wrap_pyfunction!(get_42))?;
-    m.add_wrapped(wrap_pyfunction!(double))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_edges))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_query))?;
+    m.add_wrapped(wrap_pyfunction!(maximin_tree_query_hd))?;
 
     Ok(())
 }
@@ -524,19 +648,6 @@ fn maximin(py: Python, m: &PyModule) -> PyResult<()> {
 mod tests {
     use super::*;
     use ndarray::array;
-
-    #[test]
-    fn double() {
-        let x = array![[1.0, 2.0], [3.0, 4.0]].into_dyn();
-        let y = array![[2.0, 4.0], [6.0, 8.0]].into_dyn();
-        let doubled_x = rusty_double(x.into_dyn().view()).to_owned();
-        assert_eq!(doubled_x, y);
-    }
-    #[test]
-    fn tuple_ordering() {
-        assert![(1.0, 2.0) < (2.0, 2.0)];
-        assert![(1.0, 2.0) > (1.0, 1.0)];
-    }
     #[test]
     fn test_maximin_tree() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]], [[7.0, 6.0], [5.0, 4.0]]];
@@ -547,6 +658,6 @@ mod tests {
     fn test_maximin_tree_wrong_dim() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]]].into_dyn();
         let y = x.view();
-        let edges = into_dim(y).unwrap();
+        let edges = into_3d(y).unwrap();
     }
 }
