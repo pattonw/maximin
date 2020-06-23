@@ -11,7 +11,7 @@ def test_maximin_query():
     #                  0  1    2  3      4  5    6  7      8  9   10 11
     mask = np.array([[[0, 1], [0, 0]], [[0, 0], [1, 0]], [[1, 0], [0, 1]]], dtype=np.uint8)
 
-    costs = maximin_tree_query(intensities, mask, True)
+    costs = maximin_tree_query(intensities, mask)
 
     n_to_index = {
         (0, 0, 0): 0,

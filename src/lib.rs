@@ -5,6 +5,7 @@ use ndarray::ShapeError;
 use ndarray::linalg::Dot;
 use ndarray::{s, Array, ArrayD, ArrayViewD, Ix3, Ix4, IxDynImpl};
 use numpy::{IntoPyArray, PyArrayDyn};
+
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 use pyo3::{exceptions, PyErr, PyResult};
@@ -539,7 +540,7 @@ fn decimate_mst(
     return tree;
 }
 
-#[pyfunction]
+#[pyfunction(decimate="true")]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
@@ -571,7 +572,7 @@ fn maximin_tree_query(
     Ok(results)
 }
 
-#[pyfunction]
+#[pyfunction(decimate="true")]
 fn maximin_tree_query_hd(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
