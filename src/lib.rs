@@ -127,20 +127,20 @@ fn masked_maximin_3d_tree(
     mask: &Array<u8, Ix3>,
 ) -> (
     StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    Vec<NodeIndex>,
+    HashSet<NodeIndex>,
 ) {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::default();
 
-    let mut points = Vec::new();
+    let mut critical_points = HashSet::new();
 
     for (index, candidate) in mask.indexed_iter() {
         let node_index = complete.add_node(index);
 
         if candidate > &0u8 {
-            points.push(node_index);
+            critical_points.insert(node_index);
         }
 
         let value = intensities
@@ -200,8 +200,7 @@ fn masked_maximin_3d_tree(
     let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::from_elements(min_spanning_tree(&complete));
 
-    println!["Got {} points", points.len()];
-    return (mst, points);
+    return (mst, critical_points);
 }
 
 fn masked_maximin_4d_tree(
@@ -209,7 +208,7 @@ fn masked_maximin_4d_tree(
     mask: &Array<u8, Ix3>,
 ) -> (
     StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    Vec<NodeIndex>,
+    HashSet<NodeIndex>,
 ) {
     let n_dim = mask.ndim();
     let (_c, z, y, x) = intensities.dim();
@@ -218,24 +217,17 @@ fn masked_maximin_4d_tree(
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::default();
 
-    let mut points = Vec::new();
+    let mut critical_points = HashSet::new();
 
     for (index, candidate) in mask.indexed_iter() {
         let node_index = complete.add_node(index);
 
         if candidate > &0u8 {
-            points.push(node_index);
+            critical_points.insert(node_index);
         }
         let index_slice = s![.., index.0, index.1, index.2];
         let value = intensities.slice(index_slice);
 
-        if *mask
-            .get(index)
-            .expect(&format!["Mask does not have a value at {:?}", index])
-            > 0u8
-        {
-            points.push(node_index);
-        }
         node_indices[index] = node_index.index();
 
         for i in 0..n_dim {
@@ -289,8 +281,7 @@ fn masked_maximin_4d_tree(
     let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::from_elements(min_spanning_tree(&complete));
 
-    println!["Got {} points", points.len()];
-    return (mst, points);
+    return (mst, critical_points);
 }
 
 fn tree_edges(
@@ -448,22 +439,18 @@ fn last_occurance<T: std::cmp::Eq + std::hash::Hash>(vs: &Vec<T>, ps: HashSet<T>
 
 fn trim_mst(
     mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    query_points: Vec<NodeIndex>,
-) -> (
-    StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    HashSet<NodeIndex>,
-) {
+    critical_points: &HashSet<NodeIndex>,
+) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let mut subtree_nodes: HashSet<NodeIndex> = HashSet::new();
-    let query_points: HashSet<NodeIndex> = query_points.into_iter().collect();
 
-    let start: &NodeIndex = query_points.iter().next().unwrap();
+    let start: &NodeIndex = critical_points.iter().next().unwrap();
     let mut dfs = Dfs::new(&tree, *start);
     let mut seen_nodes: Vec<NodeIndex> = vec![];
 
     while let Some(current) = dfs.next(&tree) {
         if seen_nodes.len() == 0 {
-            if !query_points.contains(&current) {
-                panic!["first node is not in query_points"];
+            if !critical_points.contains(&current) {
+                panic!["first node is not in critical_points"];
             }
             seen_nodes.push(current);
             subtree_nodes.insert(current);
@@ -486,7 +473,7 @@ fn trim_mst(
 
         // If the current id is a query point, push to query points and
         // add nodes up to previous query point to tree
-        if query_points.contains(&current) {
+        if critical_points.contains(&current) {
             let mut last = seen_nodes.iter().rev();
             loop {
                 let candidate = last.next().expect("No more candidates in seen_nodes");
@@ -501,12 +488,12 @@ fn trim_mst(
 
     tree.retain_nodes(|_tree, node| subtree_nodes.contains(&node));
 
-    return (tree, query_points);
+    return tree;
 }
 
 fn decimate_mst(
     mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    critical_points: HashSet<NodeIndex>,
+    critical_points: &HashSet<NodeIndex>,
 ) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let mut nodes_to_collapse = vec![];
 
@@ -556,22 +543,25 @@ fn decimate_mst(
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
+    decimate: bool,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_3d(intensities.as_array())?;
     let mask = into_3d(mask.as_array())?;
-    let (tree, query_points) = masked_maximin_3d_tree(&intensities, &mask);
-    let (sub_tree, critical_points) = trim_mst(tree, query_points);
-    let decimated_tree = decimate_mst(sub_tree, critical_points);
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = decimated_tree
+    let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+    let mut sub_tree = trim_mst(tree, &critical_points);
+    if decimate {
+        sub_tree = decimate_mst(sub_tree, &critical_points);
+    }
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
         .edge_indices()
         .map(|e_ind| {
-            let (u, v) = decimated_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = decimated_tree.edge_weight(e_ind).unwrap();
+            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
             (
-                *decimated_tree
+                *sub_tree
                     .node_weight(u)
                     .expect(&format!["Query node {:?} missing", u]),
-                *decimated_tree
+                *sub_tree
                     .node_weight(v)
                     .expect(&format!["Query node {:?} missing", v]),
                 -min_intensity,
@@ -585,22 +575,25 @@ fn maximin_tree_query(
 fn maximin_tree_query_hd(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
+    decimate: bool,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_4d(intensities.as_array())?;
     let mask = into_3d(mask.as_array())?;
-    let (tree, query_points) = masked_maximin_4d_tree(&intensities, &mask);
-    let (sub_tree, critical_points) = trim_mst(tree, query_points);
-    let decimated_tree = decimate_mst(sub_tree, critical_points);
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = decimated_tree
+    let (tree, critical_points) = masked_maximin_4d_tree(&intensities, &mask);
+    let mut sub_tree = trim_mst(tree, &critical_points);
+    if decimate {
+        sub_tree = decimate_mst(sub_tree, &critical_points);
+    }
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
         .edge_indices()
         .map(|e_ind| {
-            let (u, v) = decimated_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = decimated_tree.edge_weight(e_ind).unwrap();
+            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
             (
-                *decimated_tree
+                *sub_tree
                     .node_weight(u)
                     .expect(&format!["Query node {:?} missing", u]),
-                *decimated_tree
+                *sub_tree
                     .node_weight(v)
                     .expect(&format!["Query node {:?} missing", v]),
                 *min_intensity,

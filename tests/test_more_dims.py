@@ -13,7 +13,7 @@ def test_maximin_query():
     mask[0, 0, :] = 1
     mask[0, 1, :] = 1
 
-    costs = maximin_tree_query_hd(intensities, mask)
+    costs = maximin_tree_query_hd(intensities, mask, True)
 
     n_to_index = {
         (0, 0, 0): 0,
