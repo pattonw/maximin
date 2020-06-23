@@ -12,8 +12,8 @@ use pyo3::{exceptions, PyErr, PyResult};
 use petgraph::algo::min_spanning_tree;
 use petgraph::data::*;
 use petgraph::graph::NodeIndex;
+use petgraph::stable_graph::StableGraph;
 use petgraph::visit::Dfs;
-use petgraph::Graph;
 
 use std;
 
@@ -56,11 +56,11 @@ impl std::convert::From<ShapeErrorWrapper> for PyErr {
 
 fn maximin_3d_tree(
     intensities: &Array<f64, Ix3>,
-) -> Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
+) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
-    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::new_undirected();
+    let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::default();
 
     let mut node_index_map: HashMap<usize, (usize, usize, usize)> = HashMap::new();
 
@@ -117,8 +117,8 @@ fn maximin_3d_tree(
         }
     }
 
-    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::from_elements(min_spanning_tree(&complete));
+    let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::from_elements(min_spanning_tree(&complete));
     return mst;
 }
 
@@ -126,26 +126,26 @@ fn masked_maximin_3d_tree(
     intensities: &Array<f64, Ix3>,
     mask: &Array<u8, Ix3>,
 ) -> (
-    Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    Vec<(usize, usize, usize)>,
+    StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    Vec<NodeIndex>,
 ) {
     let n_dim = intensities.ndim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
-    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::new_undirected();
+    let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::default();
 
     let mut points = Vec::new();
 
-    for (index, value) in intensities.indexed_iter() {
+    for (index, candidate) in mask.indexed_iter() {
         let node_index = complete.add_node(index);
 
-        if *mask
-            .get(index)
-            .expect(&format!["Mask does not have a value at {:?}", index])
-            > 0u8
-        {
-            points.push(index);
+        if candidate > &0u8 {
+            points.push(node_index);
         }
+
+        let value = intensities
+            .get(index)
+            .expect(&format!["No intensity value for {:?}", index]);
 
         node_indices[index] = node_index.index();
         for i in 0..n_dim {
@@ -197,8 +197,8 @@ fn masked_maximin_3d_tree(
         }
     }
 
-    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::from_elements(min_spanning_tree(&complete));
+    let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::from_elements(min_spanning_tree(&complete));
 
     println!["Got {} points", points.len()];
     return (mst, points);
@@ -208,94 +208,93 @@ fn masked_maximin_4d_tree(
     intensities: &Array<f64, Ix4>,
     mask: &Array<u8, Ix3>,
 ) -> (
-    Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    Vec<(usize, usize, usize)>,
+    StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    Vec<NodeIndex>,
 ) {
     let n_dim = mask.ndim();
-    let (c, z, y, x) = intensities.dim();
+    let (_c, z, y, x) = intensities.dim();
     let mut node_indices =
         Array::<usize, _>::from_elem(ndarray::Dim((z, y, x)), usize::max_value());
-    let mut complete: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::new_undirected();
+    let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::default();
 
     let mut points = Vec::new();
 
-    for i in 0..z {
-        for j in 0..y {
-            for k in 0..x {
-                let index = (i, j, k);
-                let index_slice = s![.., index.0, index.1, index.2];
-                let value = intensities.slice(index_slice);
-                let node_index = complete.add_node(index);
+    for (index, candidate) in mask.indexed_iter() {
+        let node_index = complete.add_node(index);
 
-                if *mask
-                    .get(index)
-                    .expect(&format!["Mask does not have a value at {:?}", index])
-                    > 0u8
-                {
-                    points.push(index);
-                }
-                node_indices[index] = node_index.index();
+        if candidate > &0u8 {
+            points.push(node_index);
+        }
+        let index_slice = s![.., index.0, index.1, index.2];
+        let value = intensities.slice(index_slice);
 
-                for i in 0..n_dim {
-                    let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
-                    adj[i] = 1;
-                    let up_index = (
-                        usize::wrapping_add(index.0, adj[0]),
-                        usize::wrapping_add(index.1, adj[1]),
-                        usize::wrapping_add(index.2, adj[2]),
-                    );
-                    let up_index_slice = s![.., up_index.0, up_index.1, up_index.2];
-                    let down_index = (
-                        usize::wrapping_sub(index.0, adj[0]),
-                        usize::wrapping_sub(index.1, adj[1]),
-                        usize::wrapping_sub(index.2, adj[2]),
-                    );
-                    let down_index_slice = s![.., down_index.0, down_index.1, down_index.2];
-                    let up_index = node_indices.get(up_index);
-                    let down_index = node_indices.get(down_index);
-                    match up_index {
-                        Some(up_index) => {
-                            if up_index < &usize::max_value() {
-                                let difference = &value - &intensities.slice(up_index_slice);
-                                let dot_prod = difference.dot(&difference);
-                                complete.add_edge(
-                                    node_index,
-                                    NodeIndex::new(*up_index),
-                                    (f64::sqrt(dot_prod), 1.0),
-                                );
-                            }
-                        }
-                        None => (),
-                    }
-                    match down_index {
-                        Some(down_index) => {
-                            if down_index < &usize::max_value() {
-                                let difference = &value - &intensities.slice(down_index_slice);
-                                let dot_prod = difference.dot(&difference);
-                                complete.add_edge(
-                                    node_index,
-                                    NodeIndex::new(*down_index),
-                                    (f64::sqrt(dot_prod), 1.0),
-                                );
-                            }
-                        }
-                        None => (),
+        if *mask
+            .get(index)
+            .expect(&format!["Mask does not have a value at {:?}", index])
+            > 0u8
+        {
+            points.push(node_index);
+        }
+        node_indices[index] = node_index.index();
+
+        for i in 0..n_dim {
+            let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
+            adj[i] = 1;
+            let up_index = (
+                usize::wrapping_add(index.0, adj[0]),
+                usize::wrapping_add(index.1, adj[1]),
+                usize::wrapping_add(index.2, adj[2]),
+            );
+            let up_index_slice = s![.., up_index.0, up_index.1, up_index.2];
+            let down_index = (
+                usize::wrapping_sub(index.0, adj[0]),
+                usize::wrapping_sub(index.1, adj[1]),
+                usize::wrapping_sub(index.2, adj[2]),
+            );
+            let down_index_slice = s![.., down_index.0, down_index.1, down_index.2];
+            let up_index = node_indices.get(up_index);
+            let down_index = node_indices.get(down_index);
+            match up_index {
+                Some(up_index) => {
+                    if up_index < &usize::max_value() {
+                        let difference = &value - &intensities.slice(up_index_slice);
+                        let dot_prod = difference.dot(&difference);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*up_index),
+                            (f64::sqrt(dot_prod), 1.0),
+                        );
                     }
                 }
+                None => (),
+            }
+            match down_index {
+                Some(down_index) => {
+                    if down_index < &usize::max_value() {
+                        let difference = &value - &intensities.slice(down_index_slice);
+                        let dot_prod = difference.dot(&difference);
+                        complete.add_edge(
+                            node_index,
+                            NodeIndex::new(*down_index),
+                            (f64::sqrt(dot_prod), 1.0),
+                        );
+                    }
+                }
+                None => (),
             }
         }
     }
 
-    let mst: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        Graph::from_elements(min_spanning_tree(&complete));
+    let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
+        StableGraph::from_elements(min_spanning_tree(&complete));
 
     println!["Got {} points", points.len()];
     return (mst, points);
 }
 
 fn tree_edges(
-    graph: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    graph: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
 ) -> Vec<((usize, usize, usize), (usize, usize, usize))> {
     let mst_edges: Vec<((usize, usize, usize), (usize, usize, usize))> = min_spanning_tree(&graph)
         .filter_map(|elem| match elem {
@@ -333,7 +332,7 @@ fn into_4d<T: Clone>(intensities: ArrayViewD<T>) -> Result<ndarray::Array<T, Ix4
 
 #[pyfunction]
 fn maximin_tree_edges(
-    py: Python,
+    _py: Python,
     intensities: &PyArrayDyn<f64>,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize))>> {
     let intensities = intensities.as_array();
@@ -397,7 +396,7 @@ where
 }
 
 fn query_tree(
-    tree: &Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    tree: &StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     intensities: &ndarray::Array<f64, Ix3>,
     query_tuples: &Vec<(usize, usize)>,
 ) -> Vec<f64> {
@@ -447,43 +446,31 @@ fn last_occurance<T: std::cmp::Eq + std::hash::Hash>(vs: &Vec<T>, ps: HashSet<T>
     }
 }
 
-fn reduce_tree(
-    mut tree: Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
-    query_points: Vec<(usize, usize, usize)>,
-) -> Graph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
-    let mut nodes_to_keep: HashSet<(usize, usize, usize)> = HashSet::new();
-    let query_points: HashSet<(usize, usize, usize)> = query_points.into_iter().collect();
+fn trim_mst(
+    mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    query_points: Vec<NodeIndex>,
+) -> (
+    StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    HashSet<NodeIndex>,
+) {
+    let mut subtree_nodes: HashSet<NodeIndex> = HashSet::new();
+    let query_points: HashSet<NodeIndex> = query_points.into_iter().collect();
 
-    let mut start = None;
-    for node_index in tree.node_indices() {
-        if query_points.contains(tree.node_weight(node_index).unwrap()) {
-            start = Some(node_index);
-        }
-    }
-    let mut dfs = Dfs::new(&tree, NodeIndex::new(start.unwrap().index()));
+    let start: &NodeIndex = query_points.iter().next().unwrap();
+    let mut dfs = Dfs::new(&tree, *start);
     let mut seen_nodes: Vec<NodeIndex> = vec![];
 
-    let mut i = 0;
     while let Some(current) = dfs.next(&tree) {
-        if i % 1000 == 0 {
-            println!["traversed {} nodes!", i];
-        }
-        i += 1;
-
         if seen_nodes.len() == 0 {
-            if !query_points.contains(tree.node_weight(current).unwrap()) {
+            if !query_points.contains(&current) {
                 panic!["first node is not in query_points"];
             }
             seen_nodes.push(current);
-            nodes_to_keep.insert(*tree.node_weight(current).unwrap());
+            subtree_nodes.insert(current);
             continue;
         }
 
-        let current_id = current.index();
-
-        // pop nodes that aren't neighbors of current.
-        // Since this is a dfs, we must have come accross currents parents before,
-        // so this is guaranteed to end before seen_nodes is empty.
+        // backtrack up dfs until a neighbor of current is found
         loop {
             let candidate = seen_nodes.pop().expect("no previously seen nodes!");
             match tree.find_edge(candidate, current) {
@@ -499,25 +486,32 @@ fn reduce_tree(
 
         // If the current id is a query point, push to query points and
         // add nodes up to previous query point to tree
-        if query_points.contains(tree.node_weight(current).unwrap()) {
+        if query_points.contains(&current) {
             let mut last = seen_nodes.iter().rev();
             loop {
                 let candidate = last.next().expect("No more candidates in seen_nodes");
-                if nodes_to_keep.contains(tree.node_weight(*candidate).unwrap()) {
+                if subtree_nodes.contains(candidate) {
                     break;
                 } else {
-                    nodes_to_keep.insert(*tree.node_weight(*candidate).unwrap());
+                    subtree_nodes.insert(*candidate);
                 }
             }
         }
     }
 
-    tree.retain_nodes(|tree, node| nodes_to_keep.contains(tree.node_weight(node).unwrap()));
+    tree.retain_nodes(|_tree, node| subtree_nodes.contains(&node));
 
+    return (tree, query_points);
+}
+
+fn decimate_mst(
+    mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+    critical_points: HashSet<NodeIndex>,
+) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let mut nodes_to_collapse = vec![];
 
     for node in tree.node_indices() {
-        if !query_points.contains(tree.node_weight(node).unwrap()) {
+        if !critical_points.contains(&node) {
             nodes_to_collapse.push(node);
         }
     }
@@ -528,15 +522,13 @@ fn reduce_tree(
         let (edge_a, node_a) = match neighbors.next(&tree) {
             Some(x) => x,
             None => {
-                tree.remove_node(*node).unwrap();
-                continue;
+                panic![format!["node {:?} has no neighbors", node]];
             }
         };
         let (edge_b, node_b) = match neighbors.next(&tree) {
             Some(x) => x,
             None => {
-                tree.remove_node(*node).unwrap();
-                continue;
+                panic![format!["node {:?} has only 1 neighbor", node]];
             }
         };
         match neighbors.next(&tree) {
@@ -560,8 +552,6 @@ fn reduce_tree(
     return tree;
 }
 
-/// given an python ndarray of intensities (f64) and mask (u8) return pairwise costs between
-/// every voxel in the mask.
 #[pyfunction]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
@@ -569,24 +559,19 @@ fn maximin_tree_query(
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_3d(intensities.as_array())?;
     let mask = into_3d(mask.as_array())?;
-    let (mut tree, query_points) = masked_maximin_3d_tree(&intensities, &mask);
-    println![
-        "Got tree with {} nodes and {} edges",
-        tree.node_count(),
-        tree.edge_count()
-    ];
-    let sub_tree = reduce_tree(tree, query_points);
-    println!["Reduced tree to {} nodes", sub_tree.node_count()];
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
+    let (tree, query_points) = masked_maximin_3d_tree(&intensities, &mask);
+    let (sub_tree, critical_points) = trim_mst(tree, query_points);
+    let decimated_tree = decimate_mst(sub_tree, critical_points);
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = decimated_tree
         .edge_indices()
         .map(|e_ind| {
-            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
+            let (u, v) = decimated_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = decimated_tree.edge_weight(e_ind).unwrap();
             (
-                *sub_tree
+                *decimated_tree
                     .node_weight(u)
                     .expect(&format!["Query node {:?} missing", u]),
-                *sub_tree
+                *decimated_tree
                     .node_weight(v)
                     .expect(&format!["Query node {:?} missing", v]),
                 -min_intensity,
@@ -596,35 +581,26 @@ fn maximin_tree_query(
     Ok(results)
 }
 
-/// given an python ndarray of intensities (f64) and mask (u8) return pairwise costs between
-/// every voxel in the mask.
 #[pyfunction]
 fn maximin_tree_query_hd(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_4d(intensities.as_array())?;
-    println!["{:?}", intensities.dim()];
     let mask = into_3d(mask.as_array())?;
-    println!["{:?}", mask.dim()];
-    let (mut tree, query_points) = masked_maximin_4d_tree(&intensities, &mask);
-    println![
-        "Got tree with {} nodes and {} edges",
-        tree.node_count(),
-        tree.edge_count()
-    ];
-    let sub_tree = reduce_tree(tree, query_points);
-    println!["Reduced tree to {} nodes", sub_tree.node_count()];
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
+    let (tree, query_points) = masked_maximin_4d_tree(&intensities, &mask);
+    let (sub_tree, critical_points) = trim_mst(tree, query_points);
+    let decimated_tree = decimate_mst(sub_tree, critical_points);
+    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = decimated_tree
         .edge_indices()
         .map(|e_ind| {
-            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
+            let (u, v) = decimated_tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = decimated_tree.edge_weight(e_ind).unwrap();
             (
-                *sub_tree
+                *decimated_tree
                     .node_weight(u)
                     .expect(&format!["Query node {:?} missing", u]),
-                *sub_tree
+                *decimated_tree
                     .node_weight(v)
                     .expect(&format!["Query node {:?} missing", v]),
                 *min_intensity,
@@ -634,9 +610,8 @@ fn maximin_tree_query_hd(
     Ok(results)
 }
 
-/// This module is a python module implemented in Rust.
 #[pymodule]
-fn maximin(py: Python, m: &PyModule) -> PyResult<()> {
+fn maximin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(maximin_tree_edges))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_query))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_query_hd))?;
