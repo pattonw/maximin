@@ -1,4 +1,8 @@
-#![feature(option_expect_none)]
+#![feature(test)]
+
+extern crate test;
+use ndarray_rand;
+use rand_isaac;
 
 #[macro_use]
 use ndarray::ShapeError;
@@ -540,7 +544,7 @@ fn decimate_mst(
     return tree;
 }
 
-#[pyfunction(decimate="true")]
+#[pyfunction(decimate = "true")]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
@@ -572,7 +576,7 @@ fn maximin_tree_query(
     Ok(results)
 }
 
-#[pyfunction(decimate="true")]
+#[pyfunction(decimate = "true")]
 fn maximin_tree_query_hd(
     intensities: &PyArrayDyn<f64>,
     mask: &PyArrayDyn<u8>,
@@ -617,16 +621,62 @@ fn maximin(_py: Python, m: &PyModule) -> PyResult<()> {
 mod tests {
     use super::*;
     use ndarray::array;
+    use ndarray::Array;
+    use ndarray_rand::rand::SeedableRng;
+    use ndarray_rand::rand_distr::Binomial;
+    use ndarray_rand::rand_distr::Uniform;
+    use ndarray_rand::RandomExt;
+    use rand_isaac::isaac64::Isaac64Rng;
+    use test::Bencher;
+
     #[test]
     fn test_maximin_tree() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]], [[7.0, 6.0], [5.0, 4.0]]];
         let tree = maximin_3d_tree(&x);
         assert_eq![tree.edge_count(), 7];
     }
+    #[bench]
+    fn bench_maximin_tree(b: &mut Bencher) {
+        let x = array![[[0.0, 1.0], [3.0, 2.0]], [[7.0, 6.0], [5.0, 4.0]]];
+        b.iter(|| maximin_3d_tree(&x));
+    }
+    #[bench]
+    fn bench_random_maximin_tree(b: &mut Bencher) {
+        // Get a seeded random number generator for reproducibility (Isaac64 algorithm)
+        let seed = 42;
+        let mut rng = Isaac64Rng::seed_from_u64(seed);
 
-    fn test_maximin_tree_wrong_dim() {
-        let x = array![[[0.0, 1.0], [3.0, 2.0]]].into_dyn();
-        let y = x.view();
-        let edges = into_3d(y).unwrap();
+        // Generate a random array using `rng`
+        let a = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
+        b.iter(|| maximin_3d_tree(&a));
+    }
+    #[bench]
+    fn bench_random_trim_tree(b: &mut Bencher) {
+        // Get a seeded random number generator for reproducibility (Isaac64 algorithm)
+        let seed = 42;
+        let mut rng = Isaac64Rng::seed_from_u64(seed);
+
+        // Generate a random array using `rng`
+        let intensities = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
+        let mask = Array::random_using((10, 10, 10), Uniform::new(0., 1.0), &mut rng)
+            .mapv(|a| (a > 0.5).into());
+
+        let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        b.iter(|| trim_mst(tree.clone(), &critical_points));
+    }
+    #[bench]
+    fn bench_random_decimate_tree(b: &mut Bencher) {
+        // Get a seeded random number generator for reproducibility (Isaac64 algorithm)
+        let seed = 42;
+        let mut rng = Isaac64Rng::seed_from_u64(seed);
+
+        // Generate a random array using `rng`
+        let intensities = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
+        let mask = Array::random_using((10, 10, 10), Uniform::new(0., 1.0), &mut rng)
+            .mapv(|a| (a > 0.5).into());
+
+        let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        let sub_tree = trim_mst(tree, &critical_points);
+        b.iter(|| decimate_mst(sub_tree.clone(), &critical_points));
     }
 }
