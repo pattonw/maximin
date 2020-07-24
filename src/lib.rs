@@ -182,14 +182,12 @@ fn masked_maximin_4d_tree(
 ) {
     let n_dim = mask.ndim();
     let dims = mask.raw_dim();
-    let mut node_indices =
-        Array::<usize, _>::from_elem(dims, usize::max_value());
+    let mut node_indices = Array::<usize, _>::from_elem(dims, usize::max_value());
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::with_capacity(
             dims[0] * dims[1] * dims[2],
             2 * n_dim * dims[0] * dims[1] * dims[2],
         );
-
 
     let mut critical_points = HashSet::new();
 
@@ -497,6 +495,26 @@ fn decimate_mst(
     return tree;
 }
 
+fn tree_to_edges(
+    tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+) -> Vec<((usize, usize, usize), (usize, usize, usize), f64)> {
+    tree.edge_indices()
+        .map(|e_ind| {
+            let (u, v) = tree.edge_endpoints(e_ind).unwrap();
+            let (min_intensity, _max_intensity) = tree.edge_weight(e_ind).unwrap();
+            (
+                *tree
+                    .node_weight(u)
+                    .expect(&format!["Query node {:?} missing", u]),
+                *tree
+                    .node_weight(v)
+                    .expect(&format!["Query node {:?} missing", v]),
+                *min_intensity,
+            )
+        })
+        .collect()
+}
+
 #[pyfunction(decimate = "true")]
 fn maximin_tree_query(
     intensities: &PyArrayDyn<f64>,
@@ -511,23 +529,26 @@ fn maximin_tree_query(
     if decimate {
         sub_tree = decimate_mst(sub_tree, &critical_points);
     }
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
-        .edge_indices()
-        .map(|e_ind| {
-            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
-            (
-                *sub_tree
-                    .node_weight(u)
-                    .expect(&format!["Query node {:?} missing", u]),
-                *sub_tree
-                    .node_weight(v)
-                    .expect(&format!["Query node {:?} missing", v]),
-                -min_intensity,
-            )
-        })
-        .collect();
+    let results = tree_to_edges(sub_tree);
     Ok(results)
+}
+#[pyfunction]
+fn maximin_tree_query_plus_decimated(
+    intensities: &PyArrayDyn<f64>,
+    mask: &PyArrayDyn<u8>,
+) -> PyResult<(
+    Vec<((usize, usize, usize), (usize, usize, usize), f64)>,
+    Vec<((usize, usize, usize), (usize, usize, usize), f64)>,
+)> {
+    let intensities = into_3d(intensities.as_array())?;
+    let mask = into_3d(mask.as_array())?;
+    let (complete, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+    let tree = mst(complete);
+    let sub_tree = trim_mst(tree, &critical_points);
+    let decimated_sub_tree = decimate_mst(sub_tree.clone(), &critical_points);
+    let results = tree_to_edges(sub_tree);
+    let decimated_results = tree_to_edges(decimated_sub_tree);
+    Ok((results, decimated_results))
 }
 
 #[pyfunction(decimate = "true")]
@@ -544,30 +565,35 @@ fn maximin_tree_query_hd(
     if decimate {
         sub_tree = decimate_mst(sub_tree, &critical_points);
     }
-    let results: Vec<((usize, usize, usize), (usize, usize, usize), f64)> = sub_tree
-        .edge_indices()
-        .map(|e_ind| {
-            let (u, v) = sub_tree.edge_endpoints(e_ind).unwrap();
-            let (min_intensity, _max_intensity) = sub_tree.edge_weight(e_ind).unwrap();
-            (
-                *sub_tree
-                    .node_weight(u)
-                    .expect(&format!["Query node {:?} missing", u]),
-                *sub_tree
-                    .node_weight(v)
-                    .expect(&format!["Query node {:?} missing", v]),
-                *min_intensity,
-            )
-        })
-        .collect();
+    let results = tree_to_edges(sub_tree);
     Ok(results)
+}
+#[pyfunction]
+fn maximin_tree_query_hd_plus_decimated(
+    intensities: &PyArrayDyn<f64>,
+    mask: &PyArrayDyn<u8>,
+) -> PyResult<(
+    Vec<((usize, usize, usize), (usize, usize, usize), f64)>,
+    Vec<((usize, usize, usize), (usize, usize, usize), f64)>,
+)> {
+    let intensities = into_4d(intensities.as_array())?;
+    let mask = into_3d(mask.as_array())?;
+    let (complete, critical_points) = masked_maximin_4d_tree(&intensities, &mask);
+    let tree = mst(complete);
+    let sub_tree = trim_mst(tree, &critical_points);
+    let decimated_sub_tree = decimate_mst(sub_tree.clone(), &critical_points);
+    let results = tree_to_edges(sub_tree);
+    let decimated_results = tree_to_edges(decimated_sub_tree);
+    Ok((results, decimated_results))
 }
 
 #[pymodule]
 fn maximin(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_wrapped(wrap_pyfunction!(maximin_tree_edges))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_query))?;
+    m.add_wrapped(wrap_pyfunction!(maximin_tree_query_plus_decimated))?;
     m.add_wrapped(wrap_pyfunction!(maximin_tree_query_hd))?;
+    m.add_wrapped(wrap_pyfunction!(maximin_tree_query_hd_plus_decimated))?;
 
     Ok(())
 }
