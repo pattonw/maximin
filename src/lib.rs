@@ -7,7 +7,7 @@ use rand_isaac;
 #[macro_use]
 use ndarray::ShapeError;
 use ndarray::linalg::Dot;
-use ndarray::{s, Array, ArrayD, ArrayViewD, Ix3, Ix4, IxDynImpl};
+use ndarray::{array, s, Array, ArrayD, ArrayViewD, Ix3, Ix4, IxDynImpl};
 use numpy::{IntoPyArray, PyArrayDyn};
 
 use pyo3::prelude::*;
@@ -63,9 +63,13 @@ fn maximin_3d_tree(
     intensities: &Array<f64, Ix3>,
 ) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let n_dim = intensities.ndim();
-    let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
+    let dims = intensities.raw_dim();
+    let mut node_indices = Array::<usize, _>::from_elem(dims, usize::max_value());
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        StableGraph::default();
+        StableGraph::with_capacity(
+            dims[0] * dims[1] * dims[2],
+            2 * n_dim * dims[0] * dims[1] * dims[2],
+        );
 
     let mut node_index_map: HashMap<usize, (usize, usize, usize)> = HashMap::new();
 
@@ -76,34 +80,13 @@ fn maximin_3d_tree(
         for i in 0..n_dim {
             let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
             adj[i] = 1;
-            let up_neighbor_index = (
-                usize::wrapping_add(index.0, adj[0]),
-                usize::wrapping_add(index.1, adj[1]),
-                usize::wrapping_add(index.2, adj[2]),
-            );
             let down_neighbor_index = (
                 usize::wrapping_sub(index.0, adj[0]),
                 usize::wrapping_sub(index.1, adj[1]),
                 usize::wrapping_sub(index.2, adj[2]),
             );
 
-            let up_index = node_indices.get(up_neighbor_index);
             let down_index = node_indices.get(down_neighbor_index);
-
-            match up_index {
-                Some(up_index) => {
-                    if up_index < &usize::max_value() {
-                        let min_intensity = f64::min(*value, intensities[up_neighbor_index]);
-                        let max_intensity = f64::max(*value, intensities[up_neighbor_index]);
-                        complete.add_edge(
-                            node_index,
-                            NodeIndex::new(*up_index),
-                            (-min_intensity, -max_intensity),
-                        );
-                    }
-                }
-                None => (),
-            }
 
             match down_index {
                 Some(down_index) => {
@@ -122,6 +105,12 @@ fn maximin_3d_tree(
         }
     }
 
+    return complete;
+}
+
+fn mst(
+    complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
+) -> StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> {
     let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
         StableGraph::from_elements(min_spanning_tree(&complete));
     return mst;
@@ -135,61 +124,40 @@ fn masked_maximin_3d_tree(
     HashSet<NodeIndex>,
 ) {
     let n_dim = intensities.ndim();
+    let dims = mask.raw_dim();
     let mut node_indices = Array::<usize, _>::from_elem(intensities.raw_dim(), usize::max_value());
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        StableGraph::default();
+        StableGraph::with_capacity(
+            dims[0] * dims[1] * dims[2],
+            2 * n_dim * dims[0] * dims[1] * dims[2],
+        );
 
     let mut critical_points = HashSet::new();
 
     for (index, candidate) in mask.indexed_iter() {
         let node_index = complete.add_node(index);
+        let value = intensities[index];
 
         if candidate > &0u8 {
             critical_points.insert(node_index);
         }
-
-        let value = intensities
-            .get(index)
-            .expect(&format!["No intensity value for {:?}", index]);
-
         node_indices[index] = node_index.index();
         for i in 0..n_dim {
             let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
             adj[i] = 1;
-            let up_neighbor_index = (
-                usize::wrapping_add(index.0, adj[0]),
-                usize::wrapping_add(index.1, adj[1]),
-                usize::wrapping_add(index.2, adj[2]),
-            );
             let down_neighbor_index = (
                 usize::wrapping_sub(index.0, adj[0]),
                 usize::wrapping_sub(index.1, adj[1]),
                 usize::wrapping_sub(index.2, adj[2]),
             );
 
-            let up_index = node_indices.get(up_neighbor_index);
             let down_index = node_indices.get(down_neighbor_index);
-
-            match up_index {
-                Some(up_index) => {
-                    if up_index < &usize::max_value() {
-                        let min_intensity = f64::min(*value, intensities[up_neighbor_index]);
-                        let max_intensity = f64::max(*value, intensities[up_neighbor_index]);
-                        complete.add_edge(
-                            node_index,
-                            NodeIndex::new(*up_index),
-                            (-min_intensity, -max_intensity),
-                        );
-                    }
-                }
-                None => (),
-            }
 
             match down_index {
                 Some(down_index) => {
                     if down_index < &usize::max_value() {
-                        let min_intensity = f64::min(*value, intensities[down_neighbor_index]);
-                        let max_intensity = f64::max(*value, intensities[down_neighbor_index]);
+                        let min_intensity = f64::min(value, intensities[down_neighbor_index]);
+                        let max_intensity = f64::max(value, intensities[down_neighbor_index]);
                         complete.add_edge(
                             node_index,
                             NodeIndex::new(*down_index),
@@ -202,10 +170,7 @@ fn masked_maximin_3d_tree(
         }
     }
 
-    let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        StableGraph::from_elements(min_spanning_tree(&complete));
-
-    return (mst, critical_points);
+    return (complete, critical_points);
 }
 
 fn masked_maximin_4d_tree(
@@ -216,11 +181,15 @@ fn masked_maximin_4d_tree(
     HashSet<NodeIndex>,
 ) {
     let n_dim = mask.ndim();
-    let (_c, z, y, x) = intensities.dim();
+    let dims = mask.raw_dim();
     let mut node_indices =
-        Array::<usize, _>::from_elem(ndarray::Dim((z, y, x)), usize::max_value());
+        Array::<usize, _>::from_elem(dims, usize::max_value());
     let mut complete: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        StableGraph::default();
+        StableGraph::with_capacity(
+            dims[0] * dims[1] * dims[2],
+            2 * n_dim * dims[0] * dims[1] * dims[2],
+        );
+
 
     let mut critical_points = HashSet::new();
 
@@ -238,34 +207,13 @@ fn masked_maximin_4d_tree(
         for i in 0..n_dim {
             let mut adj: Vec<usize> = (0..n_dim).map(|_| 0).collect();
             adj[i] = 1;
-            let up_index = (
-                usize::wrapping_add(index.0, adj[0]),
-                usize::wrapping_add(index.1, adj[1]),
-                usize::wrapping_add(index.2, adj[2]),
-            );
-            let up_index_slice = s![.., up_index.0, up_index.1, up_index.2];
             let down_index = (
                 usize::wrapping_sub(index.0, adj[0]),
                 usize::wrapping_sub(index.1, adj[1]),
                 usize::wrapping_sub(index.2, adj[2]),
             );
             let down_index_slice = s![.., down_index.0, down_index.1, down_index.2];
-            let up_index = node_indices.get(up_index);
             let down_index = node_indices.get(down_index);
-            match up_index {
-                Some(up_index) => {
-                    if up_index < &usize::max_value() {
-                        let difference = &value - &intensities.slice(up_index_slice);
-                        let dot_prod = difference.dot(&difference);
-                        complete.add_edge(
-                            node_index,
-                            NodeIndex::new(*up_index),
-                            (f64::sqrt(dot_prod), 1.0),
-                        );
-                    }
-                }
-                None => (),
-            }
             match down_index {
                 Some(down_index) => {
                     if down_index < &usize::max_value() {
@@ -282,11 +230,7 @@ fn masked_maximin_4d_tree(
             }
         }
     }
-
-    let mst: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected> =
-        StableGraph::from_elements(min_spanning_tree(&complete));
-
-    return (mst, critical_points);
+    return (complete, critical_points);
 }
 
 fn tree_edges(
@@ -326,6 +270,8 @@ fn into_4d<T: Clone>(intensities: ArrayViewD<T>) -> Result<ndarray::Array<T, Ix4
     return Ok(intensities);
 }
 
+/// Get all edges of a minimum spanning tree over the given intensities.
+/// Edges returned as index pairs (a, b) where a and b are array indices.
 #[pyfunction]
 fn maximin_tree_edges(
     _py: Python,
@@ -333,7 +279,8 @@ fn maximin_tree_edges(
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize))>> {
     let intensities = intensities.as_array();
     let intensities = into_3d(intensities)?;
-    let tree = maximin_3d_tree(&intensities);
+    let complete = maximin_3d_tree(&intensities);
+    let tree = mst(complete);
     Ok(tree_edges(tree))
 }
 
@@ -391,6 +338,7 @@ where
     scores
 }
 
+/// A method for querying the maximum intensity between two nodes on a tree
 fn query_tree(
     tree: &StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     intensities: &ndarray::Array<f64, Ix3>,
@@ -442,6 +390,9 @@ fn last_occurance<T: std::cmp::Eq + std::hash::Hash>(vs: &Vec<T>, ps: HashSet<T>
     }
 }
 
+/// Remove excess nodes and edges from the mst. For every node in the tree, if
+/// removing the node would not cause any critical points to land on seperate
+/// connected components, that node is removed along with all adjacent edges.
 fn trim_mst(
     mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     critical_points: &HashSet<NodeIndex>,
@@ -496,6 +447,8 @@ fn trim_mst(
     return tree;
 }
 
+/// Collapse chains of nodes between critical points to a single edge with score equal
+/// to the maximum edge between the critical points.
 fn decimate_mst(
     mut tree: StableGraph<(usize, usize, usize), (f64, f64), petgraph::Undirected>,
     critical_points: &HashSet<NodeIndex>,
@@ -552,7 +505,8 @@ fn maximin_tree_query(
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_3d(intensities.as_array())?;
     let mask = into_3d(mask.as_array())?;
-    let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+    let (complete, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+    let tree = mst(complete);
     let mut sub_tree = trim_mst(tree, &critical_points);
     if decimate {
         sub_tree = decimate_mst(sub_tree, &critical_points);
@@ -584,7 +538,8 @@ fn maximin_tree_query_hd(
 ) -> PyResult<Vec<((usize, usize, usize), (usize, usize, usize), f64)>> {
     let intensities = into_4d(intensities.as_array())?;
     let mask = into_3d(mask.as_array())?;
-    let (tree, critical_points) = masked_maximin_4d_tree(&intensities, &mask);
+    let (complete, critical_points) = masked_maximin_4d_tree(&intensities, &mask);
+    let tree = mst(complete);
     let mut sub_tree = trim_mst(tree, &critical_points);
     if decimate {
         sub_tree = decimate_mst(sub_tree, &critical_points);
@@ -629,10 +584,13 @@ mod tests {
     use rand_isaac::isaac64::Isaac64Rng;
     use test::Bencher;
 
+    static BENCH_SIZE: usize = 20;
+
     #[test]
     fn test_maximin_tree() {
         let x = array![[[0.0, 1.0], [3.0, 2.0]], [[7.0, 6.0], [5.0, 4.0]]];
-        let tree = maximin_3d_tree(&x);
+        let complete = maximin_3d_tree(&x);
+        let tree = mst(complete);
         assert_eq![tree.edge_count(), 7];
     }
     #[bench]
@@ -647,8 +605,39 @@ mod tests {
         let mut rng = Isaac64Rng::seed_from_u64(seed);
 
         // Generate a random array using `rng`
-        let a = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
-        b.iter(|| maximin_3d_tree(&a));
+        let intensities = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 10.),
+            &mut rng,
+        );
+        let mask = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 1.0),
+            &mut rng,
+        )
+        .mapv(|a| (a > 0.5).into());
+        b.iter(|| masked_maximin_3d_tree(&intensities, &mask));
+    }
+    #[bench]
+    fn bench_random_mst(b: &mut Bencher) {
+        // Get a seeded random number generator for reproducibility (Isaac64 algorithm)
+        let seed = 42;
+        let mut rng = Isaac64Rng::seed_from_u64(seed);
+
+        // Generate a random array using `rng`
+        let intensities = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 10.),
+            &mut rng,
+        );
+        let mask = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 1.0),
+            &mut rng,
+        )
+        .mapv(|a| (a > 0.5).into());
+        let (complete, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        b.iter(|| mst(complete.clone()));
     }
     #[bench]
     fn bench_random_trim_tree(b: &mut Bencher) {
@@ -657,11 +646,20 @@ mod tests {
         let mut rng = Isaac64Rng::seed_from_u64(seed);
 
         // Generate a random array using `rng`
-        let intensities = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
-        let mask = Array::random_using((10, 10, 10), Uniform::new(0., 1.0), &mut rng)
-            .mapv(|a| (a > 0.5).into());
+        let intensities = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 10.),
+            &mut rng,
+        );
+        let mask = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 1.0),
+            &mut rng,
+        )
+        .mapv(|a| (a > 0.5).into());
 
-        let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        let (complete, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        let tree = mst(complete);
         b.iter(|| trim_mst(tree.clone(), &critical_points));
     }
     #[bench]
@@ -671,11 +669,20 @@ mod tests {
         let mut rng = Isaac64Rng::seed_from_u64(seed);
 
         // Generate a random array using `rng`
-        let intensities = Array::random_using((10, 10, 10), Uniform::new(0., 10.), &mut rng);
-        let mask = Array::random_using((10, 10, 10), Uniform::new(0., 1.0), &mut rng)
-            .mapv(|a| (a > 0.5).into());
+        let intensities = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 10.),
+            &mut rng,
+        );
+        let mask = Array::random_using(
+            (BENCH_SIZE, BENCH_SIZE, BENCH_SIZE),
+            Uniform::new(0., 1.0),
+            &mut rng,
+        )
+        .mapv(|a| (a > 0.5).into());
 
-        let (tree, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        let (complete, critical_points) = masked_maximin_3d_tree(&intensities, &mask);
+        let tree = mst(complete);
         let sub_tree = trim_mst(tree, &critical_points);
         b.iter(|| decimate_mst(sub_tree.clone(), &critical_points));
     }
