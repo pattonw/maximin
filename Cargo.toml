@@ -25,8 +25,8 @@ requires-dist = ["numpy"]
 requires-python = ">=3.6"
 
 [dependencies]
-pyo3 = { version = "0.11", features = ["extension-module"] }
-numpy = { git = "https://github.com/PyO3/rust-numpy" }
+pyo3 = { version = "0.12.3", features = ["extension-module"] }
+numpy = { version = "0.12.1" }
 ndarray = "0.13"
 petgraph = "0.5.0"
 ndarray-rand = "0.11"

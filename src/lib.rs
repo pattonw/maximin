@@ -55,7 +55,7 @@ impl error::Error for ShapeErrorWrapper {
 
 impl std::convert::From<ShapeErrorWrapper> for PyErr {
     fn from(err: ShapeErrorWrapper) -> PyErr {
-        exceptions::OSError::py_err(err.to_string())
+        exceptions::PyOSError::new_err(err.to_string())
     }
 }
 
